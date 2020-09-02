@@ -63,11 +63,6 @@ PostgreSQL启动后，会生成一块共享内存，用于做数据块的缓冲�
 * manintance_work_mem: 在维护操作比如：VACUUM、CREATE INDEX、ALTER TABLE ADD FOREIGN Key等中使用的内存缓冲区。
 
 
-## VACUUM
-
-
-
-
 ## extension
 通过extension扩展能力，可以动态加载到系统空间
 fdw系列插件，使得pg可以从任意数据库上读取数据（ORACLE,SQL SERVER,MYSQL,MONDODB)
@@ -269,7 +264,8 @@ postgres=#  select phone[1],phone[2] from test_array where id=1;
      1 |     2
 (1 row)
 ```
-数组操作符
+数组操作符  
+
 ![数组操作符](images/pg_array.png)
 
 ## PostgreSQL的模式、表空间、用户间的关系
@@ -371,7 +367,152 @@ postgres=# \d+ blog;
  id      | integer |           | plain    |              | 
  title   | text    |           | extended |              | 
  content | text    |           | extended |              | 
+
+postgres=# select relname,relfilenode,reltoastrelid from pg_class where relname='blog';
+ relname | relfilenode | reltoastrelid 
+---------+-------------+---------------
+ blog    |       24587 |         24590
+(1 row)
+
+postgres=# select chunk_id,chunk_seq,length(chunk_data) from pg_toast.pg_toast_24587;
+ chunk_id | chunk_seq | length 
+----------+-----------+--------
+(0 rows)
+
+postgres=# insert into blog values(1, 'title', '0123456789');
+INSERT 0 1
+postgres=# select * from blog;
+ id | title |  content   
+----+-------+------------
+  1 | title | 0123456789
+(1 row)
+
+postgres=# select * from pg_toast.pg_toast_24587;
+ chunk_id | chunk_seq | chunk_data 
+----------+-----------+------------
+(0 rows)
+
+postgres=# update blog set content=array_to_string(ARRAY(SELECT chr((48 + round(random() * 9)) :: integer) FROM generate_series(1,10000)), '') where id=1;
+UPDATE 1
+postgres=# select id,title,length(content) from blog;
+ id | title | length 
+----+-------+--------
+  1 | title |  10000
+(1 row)
+
+postgres=# select chunk_id,chunk_seq,length(chunk_data) from pg_toast.pg_toast_24587;
+ chunk_id | chunk_seq | length 
+----------+-----------+--------
+    24598 |         0 |   1996
+    24598 |         1 |   1996
+    24598 |         2 |   1996
+    24598 |         3 |   1996
+    24598 |         4 |   1996
+    24598 |         5 |     20
+(6 rows)
+
 ```
+
+## 事务
+Postgres数据库与其他数据库最大的区别是，DDL能放入事务中，删表，TRUNCATE，创建函数，索引，都可以放在事务里原子生效，或者回滚。
+
+因为有这个功能，所以非常适合把PostgreSQL作为Sharding的分布式数据系统的底层数据库。比如，在Sharding中，常常需要在多个结点中建相同的表，这时可以考虑把建表语句放在同一个事务中，这样就可以在各个节点上先启动一个事务，然后执行建表语句。如果某个节点执行失败，也可以把前面已执行建表成功的操作回滚掉，这样就不会出现部分节点建表成功，部分节点失败的情况。
+
+一个事务里通过RENAME，完成两张表的王车易位
+```
+BEGIN;
+-- You probably want to make sure that no one else is
+-- INSERT / UPDATE / DELETE'ing from the original table, otherwise
+-- those changes may be lost during this switchover process. One way
+-- to do that would be via:
+-- LOCK TABLE "table" IN SHARE ROW EXCLUSIVE mode;
+CREATE TABLE "table_new" (LIKE "table");
+INSERT INTO "table_new" ...;
+
+-- The ALTER TABLE ... RENAME TO command takes an Access Exclusive lock on "table",
+-- but these final few statements should be fast.
+ALTER TABLE "table" RENAME TO "table_old";
+ALTER TABLE "table_new" RENAME TO "table";
+DROP TABLE "table_old";
+
+COMMIT;
+```
+
+### 事务隔离级别
+数据库的隔离级别有四种
+* 读未提交（READ UNCOMMITTED）
+* 读已提交（READ COMMITTED）
+* 重复读（REPEATABLE READ）
+* 串行化（SERIALIZABLE）
+
+对于并发事务，我们不希望发生的行为如下：
+
+* 脏读：一个事务读取了另一个未提交的事务写入的数据。
+* 不可重复读：一个事务重新读取前面读取过的数据时，发现该数据已改变。
+* 幻读：一个事务开始后，需要根据数据库中现有的数据做一些更新，于是重新执行一个查询，返回符合查询条件的行，这时发现这些行因为其它最近提交的事务而发生了改变，导致现有事务如果再进行下去可能发发生逻辑上的错误。
+* 序列化异常：成功提交一组事务的结果与按照各种可能顺序运行这些事务的结果不一致。
+  
+![pg_isolation](images/pg_isolation.jpg)
+
+在PostgreSQL中，可以请求四种标准事务隔离级别中的任意一种，但是内部只实现了三种不同的隔离级别，即 PostgreSQL 的读未提交模式的行为和读已提交相同
+
+[Are postgresql transaction levels repeatable read and serializable the same?]([images/pg_isolation.jpg](https://stackoverflow.com/questions/30668991/are-postgresql-transaction-levels-repeatable-read-and-serializable-the-same))
+
+[PostgreSQL 9.6.19 Documentation: Transaction Isolation](https://www.postgresql.org/docs/9.6/transaction-iso.html)
+
+PostgreSQL 数据库的默认事务隔离级别是 Read committed 
+```
+postgres=# show default_transaction_isolation; 
+ default_transaction_isolation 
+-------------------------------
+ read committed
+(1 row)
+```
+
+### 锁机制
+
+### MVCC
+PostgreSQL利用多版本并发控制(MVCC)来维护数据的一致性。每个事务看到的都只是一小段时间之前的数据快照(一个数据库版本)，而不是数据的当前状态。
+
+
+MVCC的实现方法有两种：
+
+1.写新数据时，把旧数据移到一个单独的地方，如回滚段中，其他人读数据时，从回滚段中把旧的数据读出来；
+
+2.写数据时，旧数据不删除，而是把新数据插入。
+
+PostgreSQL数据库使用第二种方法，而Oracle数据库和MySQL中的innodb引擎使用的是第一种方法。
+
+与oracle数据库和MySQL中的innodb引擎相比较，PostgreSQL的MVCC实现方式的优缺点如下。
+
+优点：
+
+1.事务回滚可以立即完成，无论事务进行了多少操作；
+
+2.数据可以进行很多更新，不必像Oracle和MySQL的Innodb引擎那样需要经常保证回滚段不会被用完，也不会像oracle数据库那样经常遇到“ORA-1555”错误的困扰；
+
+缺点：
+
+1.旧版本数据需要清理。PostgreSQL清理旧版本的命令成为Vacuum；
+
+2.旧版本的数据会导致查询更慢一些，因为旧版本的数据存在于数据文件中，查询时需要扫描更多的数据块
+
+## VACUUM
+[PostgreSQL 9.6.19 Documentation: Routine Vacuuming](https://www.postgresql.org/docs/9.6/routine-vacuuming.html)
+
+PostgreSQL数据库管理工作中,定期vacuum是一个重要的工作。  
+vacuum的效果：
+
+1. 释放原先更新/删除行所占据的磁盘空间。
+2. 更新POSTGRESQL查询计划中使用的统计数据。
+3. 更新visibility map，加速 index-only scans。
+4. 防止因事务ID的重置而丢失非常老的数据。
+
+第一点的原因是PostgreSQL数据的插入,更新,删除操作并不是真正放到数据库空间.如果不定期释放空间的话,由于数据太多,查询速度会巨降.
+第二点的原因是PostgreSQL在做查询处理的时候,为了是查询速度提高,会根据统计数据来确定执行计划.如果不及时更新的话,查询的效果可能不如预期.
+第四点的原因是PostgreSQL中每一个事务都会产生一个事务ID,但这个数字是有上限的. 当事务ID达到最大值后,会重新从最小值开始循环.这样如果不及时把以前的数据释放掉的话,原来的老数据会因为事务ID的丢失而丢失掉.
+
+虽然Postgresql中有自动的vacuum，但是如果是大批量的数据IO可能会导致自动执行很慢，需要配合手动执行以及自己的脚本来清理数据库。
 
 
 ## postgres 主备配置
