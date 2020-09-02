@@ -1,3 +1,28 @@
+- [postgres knowledge](#postgres-knowledge)
+  - [postgres 的特点](#postgres-的特点)
+  - [架构](#架构)
+  - [extension](#extension)
+  - [postgres 常用命令](#postgres-常用命令)
+    - [命令行操作](#命令行操作)
+    - [psql命令](#psql命令)
+  - [postgres 数据类型](#postgres-数据类型)
+    - [JSON和JSONB](#json和jsonb)
+    - [复合类型](#复合类型)
+    - [数组类型](#数组类型)
+  - [PostgreSQL的模式、表空间、用户间的关系](#postgresql的模式表空间用户间的关系)
+    - [模式](#模式)
+    - [表空间](#表空间)
+    - [角色和用户的关系](#角色和用户的关系)
+  - [PostgreSQL TOAST 技术](#postgresql-toast-技术)
+  - [事务](#事务)
+    - [事务隔离级别](#事务隔离级别)
+    - [锁机制](#锁机制)
+    - [MVCC](#mvcc)
+  - [VACUUM](#vacuum)
+  - [postgres 主备配置](#postgres-主备配置)
+  - [postgres docker部署](#postgres-docker部署)
+  - [postgres 索引](#postgres-索引)
+
 # postgres knowledge
 ## postgres 的特点
 * 开源
@@ -18,7 +43,7 @@
 
 2.主进程  
 postgres 常驻进程  
-也成为Postmaster，是整个数据库实例的总控进程，负责启动和关闭该数据库实例。
+也称为Postmaster，是整个数据库实例的总控进程，负责启动和关闭该数据库实例。
 
 默认监听UNIX Domain Socket和TCP/IP（Windows等一部分的平台只监听tcp/ip）的5432端口，等待来自前端的的连接处理。监听的端口号可以在PostgreSQL的设置文件postgresql.conf里面可以改。
 
