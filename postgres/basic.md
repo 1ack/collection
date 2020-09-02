@@ -1,7 +1,6 @@
 - [postgres knowledge](#postgres-knowledge)
   - [postgres 的特点](#postgres-的特点)
   - [架构](#架构)
-  - [extension](#extension)
   - [postgres 常用命令](#postgres-常用命令)
     - [命令行操作](#命令行操作)
     - [psql命令](#psql命令)
@@ -9,6 +8,13 @@
     - [JSON和JSONB](#json和jsonb)
     - [复合类型](#复合类型)
     - [数组类型](#数组类型)
+    - [区间类型](#区间类型)
+  - [语法](#语法)
+    - [表继承](#表继承)
+    - [拆分表](#拆分表)
+    - [触发器](#触发器)
+    - [Window Function](#window-function)
+    - [grouping sets](#grouping-sets)
   - [PostgreSQL的模式、表空间、用户间的关系](#postgresql的模式表空间用户间的关系)
     - [模式](#模式)
     - [表空间](#表空间)
@@ -19,14 +25,23 @@
     - [锁机制](#锁机制)
     - [MVCC](#mvcc)
   - [VACUUM](#vacuum)
+  - [extension](#extension)
+    - [FDW](#fdw)
   - [postgres 主备配置](#postgres-主备配置)
   - [postgres docker部署](#postgres-docker部署)
   - [postgres 索引](#postgres-索引)
+    - [Btree](#btree)
+    - [Hash](#hash)
+    - [GIN](#gin)
+    - [GIST](#gist)
+  - [OLTP OLAP](#oltp-olap)
+  - [系统监控](#系统监控)
+  - [全文本搜索](#全文本搜索)
 
 # postgres knowledge
 ## postgres 的特点
 * 开源
-* 支持丰富的数据类型和自定义类型(JSON JSONB ARRAY)
+* 支持丰富的数据类型和自定义类型(JSON JSONB ARRAY XML)
 * 提供丰富的接口，很容易扩展功能 (Extension)
 * 支持使用流行的语言写自定义函数 (PL/Perl PL/Python PL/pgSQL)
 
@@ -87,11 +102,6 @@ PostgreSQL启动后，会生成一块共享内存，用于做数据块的缓冲�
 
 * manintance_work_mem: 在维护操作比如：VACUUM、CREATE INDEX、ALTER TABLE ADD FOREIGN Key等中使用的内存缓冲区。
 
-
-## extension
-通过extension扩展能力，可以动态加载到系统空间
-fdw系列插件，使得pg可以从任意数据库上读取数据（ORACLE,SQL SERVER,MYSQL,MONDODB)
-[awesome-postgres]https://github.com/dhamaniasad/awesome-postgres
 
 ## postgres 常用命令
 ### 命令行操作
@@ -292,6 +302,108 @@ postgres=#  select phone[1],phone[2] from test_array where id=1;
 数组操作符  
 
 ![数组操作符](images/pg_array.png)
+
+### 区间类型
+
+
+## 语法
+### 表继承
+
+### 拆分表
+
+### 触发器
+
+
+
+### Window Function
+
+### grouping sets
+分组函数，每个分组集合单独进行聚合计算,使用sql直接出报表很方便，一个sql就把明细和汇总值都得到
+```
+postgres=# select * from t;
+ id |   name   | class | score 
+----+----------+-------+-------
+  1 | math     |     1 |    90
+  2 | math     |     2 |    80
+  3 | math     |     1 |    70
+  4 | chinese  |     2 |    60
+  5 | chinese  |     1 |    50
+  6 | chinese  |     2 |    60
+  7 | physical |     1 |    70
+  8 | physical |     2 |    80
+  9 | physical |     1 |    90
+(9 rows)
+
+postgres=# select name,class,sum(score)
+postgres-# from t
+postgres-# group by name,class
+postgres-# order by name,class;
+   name   | class | sum 
+----------+-------+-----
+ chinese  |     1 |  50
+ chinese  |     2 | 120
+ math     |     1 | 160
+ math     |     2 |  80
+ physical |     1 | 160
+ physical |     2 |  80
+(6 rows)
+
+postgres=# select name,class,sum(score)
+from t
+group by grouping sets((name),(class)
+,()) order by name,class;
+   name   | class | sum 
+----------+-------+-----
+ chinese  |       | 170
+ math     |       | 240
+ physical |       | 240
+          |     1 | 370
+          |     2 | 280
+          |       | 650
+(6 rows)
+```
+* rollup((a),(b),(c))等价于grouping sets((a,b,c),(a,b),(a),()) 
+```
+postgres=# select name,class,sum(score)
+from t
+group by rollup((name),(class)
+) order by name,class;
+   name   | class | sum 
+----------+-------+-----
+ chinese  |     1 |  50
+ chinese  |     2 | 120
+ chinese  |       | 170
+ math     |     1 | 160
+ math     |     2 |  80
+ math     |       | 240
+ physical |     1 | 160
+ physical |     2 |  80
+ physical |       | 240
+          |       | 650
+(10 rows)
+```
+* cube((a),(b),(c))等价于grouping sets((a,b,c),(a,b),(a,c),(a),(b,c),(b),(c),()) 
+```
+postgres=# select name,class,sum(score)
+from t
+group by cube((name),(class)
+) order by name,class;
+   name   | class | sum 
+----------+-------+-----
+ chinese  |     1 |  50
+ chinese  |     2 | 120
+ chinese  |       | 170
+ math     |     1 | 160
+ math     |     2 |  80
+ math     |       | 240
+ physical |     1 | 160
+ physical |     2 |  80
+ physical |       | 240
+          |     1 | 370
+          |     2 | 280
+          |       | 650
+(12 rows)
+```
 
 ## PostgreSQL的模式、表空间、用户间的关系
 ### 模式
@@ -539,9 +651,37 @@ vacuum的效果：
 
 虽然Postgresql中有自动的vacuum，但是如果是大批量的数据IO可能会导致自动执行很慢，需要配合手动执行以及自己的脚本来清理数据库。
 
+## extension
+通过extension扩展能力，可以动态加载到系统空间
+fdw系列插件，使得pg可以从任意数据库上读取数据（ORACLE,SQL SERVER,MYSQL,MONDODB)
+[awesome-postgres]https://github.com/dhamaniasad/awesome-postgres
+
+### FDW
+
 
 ## postgres 主备配置
+复制方式多样：段复制，流复制，触发器复制，逻辑复制，插件复制，多种复制方法。
+丰富的复制支持使得不停服务迁移数据变得无比容易。
+
+提交方式多样：异步提交，同步提交，法定人数同步提交。
 
 ## postgres docker部署
 
 ## postgres 索引
+### Btree
+
+### Hash
+
+### GIN
+
+### GIST
+
+能够并发地创建或删除索引（不锁表）；为表添加新的空字段不锁表，瞬间完成。
+这意味着可以随时在线上按需添加移除索引，添加字段，不影响业务。
+
+## OLTP OLAP
+
+## 系统监控
+pg_stat_statements
+
+## 全文本搜索
