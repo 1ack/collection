@@ -8,8 +8,11 @@
     - [JSON和JSONB](#json和jsonb)
     - [复合类型](#复合类型)
     - [数组类型](#数组类型)
+    - [bit类型](#bit类型)
     - [区间类型](#区间类型)
+    - [文本搜索类型](#文本搜索类型)
   - [语法](#语法)
+    - [自增序列](#自增序列)
     - [表继承](#表继承)
     - [拆分表](#拆分表)
     - [触发器](#触发器)
@@ -32,11 +35,15 @@
   - [postgres 索引](#postgres-索引)
     - [Btree](#btree)
     - [Hash](#hash)
-    - [GIN](#gin)
-    - [GIST](#gist)
+    - [GIN (Generalized Inverted Index)](#gin-generalized-inverted-index)
   - [OLTP OLAP](#oltp-olap)
   - [系统监控](#系统监控)
   - [全文本搜索](#全文本搜索)
+  - [pgbench](#pgbench)
+  - [集群](#集群)
+  - [并发](#并发)
+    - [ad lock 用于秒杀](#ad-lock-用于秒杀)
+    - [skip locked](#skip-locked)
 
 # postgres knowledge
 ## postgres 的特点
@@ -44,6 +51,10 @@
 * 支持丰富的数据类型和自定义类型(JSON JSONB ARRAY XML)
 * 提供丰富的接口，很容易扩展功能 (Extension)
 * 支持使用流行的语言写自定义函数 (PL/Perl PL/Python PL/pgSQL)
+
+
+能够并发地创建或删除索引（不锁表）；为表添加新的空字段不锁表，瞬间完成。
+这意味着可以随时在线上按需添加移除索引，添加字段，不影响业务。
 
 [PostgreSQL优于其他开源数据库的特性：Part I](https://postgres.fun/20151209093052.html)
 
@@ -303,10 +314,38 @@ postgres=#  select phone[1],phone[2] from test_array where id=1;
 
 ![数组操作符](images/pg_array.png)
 
+### bit类型
+一串 1 和 0 的字符串，用于存储和直观化位掩码，占用空间少
+bit(n)  bit varying(n)
+```
+postgres=# CREATE TABLE test (a BIT(3), b BIT VARYING(5));
+CREATE TABLE
+postgres=# INSERT INTO test VALUES (B'101', B'00');
+INSERT 0 1
+postgres=# INSERT INTO test VALUES (B'10', B'101');
+ERROR:  bit string length 2 does not match type bit(3)
+postgres=# INSERT INTO test VALUES (B'10'::bit(3), B'101');
+INSERT 0 1
+postgres=# SELECT * FROM test;
+  a  |  b  
+-----+-----
+ 101 | 00
+ 100 | 101
+(2 rows)
+```
+bit类型操作
+![bit类型](images/pg_bit.jpg)
+
+
 ### 区间类型
 
+### 文本搜索类型
+tsvector 
+tsquery
 
 ## 语法
+### 自增序列
+意义：并发获取nextval时，保证唯一和递增，但可能存在漏空
 ### 表继承
 
 ### 拆分表
@@ -645,8 +684,10 @@ vacuum的效果：
 3. 更新visibility map，加速 index-only scans。
 4. 防止因事务ID的重置而丢失非常老的数据。
 
-第一点的原因是PostgreSQL数据的插入,更新,删除操作并不是真正放到数据库空间.如果不定期释放空间的话,由于数据太多,查询速度会巨降.
-第二点的原因是PostgreSQL在做查询处理的时候,为了是查询速度提高,会根据统计数据来确定执行计划.如果不及时更新的话,查询的效果可能不如预期.
+第一点的原因是PostgreSQL数据的插入,更新,删除操作并不是真正放到数据库空间.如果不定期释放空间的话,由于数据太多,查询速度会巨降.  
+
+第二点的原因是PostgreSQL在做查询处理的时候,为了是查询速度提高,会根据统计数据来确定执行计划.如果不及时更新的话,查询的效果可能不如预期.  
+
 第四点的原因是PostgreSQL中每一个事务都会产生一个事务ID,但这个数字是有上限的. 当事务ID达到最大值后,会重新从最小值开始循环.这样如果不及时把以前的数据释放掉的话,原来的老数据会因为事务ID的丢失而丢失掉.
 
 虽然Postgresql中有自动的vacuum，但是如果是大批量的数据IO可能会导致自动执行很慢，需要配合手动执行以及自己的脚本来清理数据库。
@@ -668,16 +709,71 @@ fdw系列插件，使得pg可以从任意数据库上读取数据（ORACLE,SQL S
 ## postgres docker部署
 
 ## postgres 索引
+postgres支持的索引包括：btree, hash, gin, gist, sp-gist, brin, bloom, rum
+
+支持基于表达式建立索引
+
+```
+SELECT * FROM test1 WHERE lower(col1) = 'value';
+CREATE INDEX test1_lower_col1_idx ON test1 (lower(col1));
+```
+
 ### Btree
+CREATE INDEX命令默认创建 B-tree 索引。
+
+主键和唯一键会自动创建Btree索引，无需另外单独再为主键和唯一键创建索引。
+Btree索引适合处理能够按顺序存储的数据的
+```
+=,<,>,<=,>=
+```
+以及等效这些操作符的其他操作,如
+```
+BETWEEN，IN以及IS NULL和以字符串开头的模糊查询
+```
+
+Btree索引要想起作用,where条件必须包含第一个索引列。最左匹配原则
+
+内部使用了B+树，压缩了B树的层级，能够有效节省数据库的IO查找操作
 
 ### Hash
+没有使用WAL记录，系统崩溃后需要重建不建议使用
 
-### GIN
+### GIN (Generalized Inverted Index)
+通用倒排索引  
+一般用来索引复合类型对象中的元素 
 
-### GIST
+GIN的标准中定义了用于一维数组的操作符，如包含“@>”，被包含“<@”，相等“=”，重叠操作符“&&”。
+```
+postgres=# create table person (
+postgres(#   id  int, 
+postgres(#   name varchar(20),
+postgres(#   phone varchar(32)[]
+postgres(# );
+CREATE TABLE
+postgres=# create index idx_phone on person using gin(phone);
+CREATE INDEX
+postgres=# insert into person values(1,'April','{"0000000","1234567"}');
+INSERT 0 1
+postgres=# insert into person values(2,'Harris','{"1111111","7654321"}');
+INSERT 0 1
 
-能够并发地创建或删除索引（不锁表）；为表添加新的空字段不锁表，瞬间完成。
-这意味着可以随时在线上按需添加移除索引，添加字段，不影响业务。
+
+查询号码'1111111'属于谁
+postgres=# select * from person where phone @> array['1111111'::varchar(32)];
+ id |  name  |       phone       
+----+--------+-------------------
+  2 | Harris | {1111111,7654321}
+(1 row)
+```
+
+GIN索引的插入操作与btree索引不同，对于btree索引，基表增加一行，btree索引也是增加一个索引项。而对于GIN索引基表增加一行，GIN索引可能需要增加多个索引项。所以GIN索引的插入是低效的。所以PG为了解决这个问题，实现了两种插入模式：
+* 正常模式  
+在该模式下，基表元组产生的新的GIN索引，会被立即插入到GIN索引
+
+* fastupdate模式  
+在该模式下，基表元组产生的新的GIN索引，会被插入到pending list中，而pending list会在一定条件下批量的插入到GIN索引中
+
+
 
 ## OLTP OLAP
 
@@ -685,3 +781,78 @@ fdw系列插件，使得pg可以从任意数据库上读取数据（ORACLE,SQL S
 pg_stat_statements
 
 ## 全文本搜索
+使用gin 或者rum索引
+
+## pgbench
+
+## 集群
+Plproxy
+
+## 并发
+### ad lock 用于秒杀
+```
+pg_try_advisory_xact_lock() 
+ Obtain exclusive transaction level advisory lock if available
+```
+```
+create table test(id int primary key, crt_time timestamp);
+insert into test values (1);
+update test set crt_time=now() where id=1 and pg_try_advisory_xact_lock(1);
+```
+热表更新
+```
+create or replace function update() returns void as $$
+declare
+  v_id int;
+begin
+  for v_id in select id from parallel_update_test  -- 扫描式
+  loop  
+    if pg_try_advisory_xact_lock(v_id) then -- 获取到ID的LOCK才会实施更新，否则继续扫描
+      update parallel_update_test set info=array_append(info,1) where id=v_id;
+    end if;
+  end loop;
+end;
+$$ language plpgsql strict;
+```
+何时unlock？
+
+### skip locked
+```postgres=# CREATE TABLE tb1(id int,v int);
+CREATE TABLE
+postgres=# insert into tb1 values (1,100);
+INSERT 0 1
+postgres=# insert into tb1 values (2,101);
+INSERT 0 1
+postgres=# select * from tb1;
+ id |  v  
+----+-----
+  1 | 100
+  2 | 101
+(2 rows)
+
+postgres=# begin;
+BEGIN
+postgres=# select * from tb1 order by 1 limit 1 for update skip locked;
+ id |  v  
+----+-----
+  1 | 100
+(1 row)
+
+```
+另开一个session,下面可见取到的是a为2的记录，跳过了a=1的记录，而且不需要等待
+```
+postgres=# select * from tb1;
+ id |  v  
+----+-----
+  1 | 100
+  2 | 101
+(2 rows)
+
+postgres=# begin;
+BEGIN
+postgres=# select * from tb1 order by 1 limit 1 for update skip locked;
+ id |  v  
+----+-----
+  2 | 101
+(1 row)
+```
