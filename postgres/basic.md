@@ -29,6 +29,7 @@
       - [行锁](#行锁)
       - [Advisory lock 咨询锁](#advisory-lock-咨询锁)
     - [MVCC](#mvcc)
+  - [pgbench](#pgbench)
   - [秒杀](#秒杀)
     - [ad lock 用于秒杀](#ad-lock-用于秒杀)
     - [skip locked](#skip-locked)
@@ -42,7 +43,6 @@
   - [OLTP OLAP](#oltp-olap)
   - [系统监控](#系统监控)
   - [全文本搜索](#全文本搜索)
-  - [pgbench](#pgbench)
   - [集群](#集群)
   - [大表创建](#大表创建)
   - [使用规范](#使用规范)
@@ -787,6 +787,36 @@ PostgreSQL数据库使用第二种方法，而Oracle数据库和MySQL中的innod
 
 2.旧版本的数据会导致查询更慢一些，因为旧版本的数据存在于数据文件中，查询时需要扫描更多的数据块
 
+## pgbench
+
+pgbench是一个用于在PostgreSQL数据库中运行基准测试的简单程序。pgbench在多个并发的数据库会话中反复运行一系列相同的SQL命令，并计算事务执行的平均速率（每秒执行的事务个数）。允许基于开发者自己书写的事务脚本文件进行测试。
+
+命令行格式
+```
+pgbench [OPTION]... [DBNAME]
+```
+
+2job 4client跑30秒
+```
+postgres@4fb940274ff7:~$ pgbench -T 30 -j 2 -S -c 4 postgres
+starting vacuum...end.
+transaction type: <builtin: select only>
+scaling factor: 1
+query mode: simple
+number of clients: 4
+number of threads: 2
+duration: 30 s
+number of transactions actually processed: 1248959
+latency average = 0.096 ms
+tps = 41631.679408 (including connections establishing)
+tps = 41633.797860 (excluding connections establishing)
+
+```
+使用prepared statement方式，不执行VACUUM，报告平均延迟时间，每1秒钟报告线程进度，执行test1.sql里的sql，模拟20个client，启用20个线程，持续执行60秒
+```
+pgbench -M prepared -n -r -P 1 -f ./test1.sql -c 20 -j 20 -T 60 
+```
+
 ## 秒杀
 [PostgreSQL 秒杀场景优化](https://github.com/digoal/blog/blob/master/201509/20150914_01.md)  
 [PostgreSQL 秒杀4种方法 - 增加 批量流式加减库存 方法](https://github.com/digoal/blog/blob/master/201801/20180105_03.md)
@@ -937,6 +967,150 @@ vacuum的效果：
 第四点的原因是PostgreSQL中每一个事务都会产生一个事务ID,但这个数字是有上限的. 当事务ID达到最大值后,会重新从最小值开始循环.这样如果不及时把以前的数据释放掉的话,原来的老数据会因为事务ID的丢失而丢失掉.
 
 虽然Postgresql中有自动的vacuum (AUTOVACUUM实例)，但是如果是大批量的数据IO可能会导致自动执行很慢，需要配合手动执行以及自己的脚本来清理数据库。
+
+PostgreSQL数据库的statstic模块有一些计数器，用于统计每个表被插入、更新、删除的记录数。
+通过这些视图，可以查看计数器统计到的一些计数：
+```
+postgres=# \dv pg_stat*
+                     List of relations
+   Schema   |            Name             | Type |  Owner   
+------------+-----------------------------+------+----------
+ pg_catalog | pg_stat_activity            | view | postgres
+ pg_catalog | pg_stat_all_indexes         | view | postgres
+ pg_catalog | pg_stat_all_tables          | view | postgres
+ pg_catalog | pg_stat_archiver            | view | postgres
+ pg_catalog | pg_stat_bgwriter            | view | postgres
+ pg_catalog | pg_stat_database            | view | postgres
+ pg_catalog | pg_stat_database_conflicts  | view | postgres
+ pg_catalog | pg_stat_progress_vacuum     | view | postgres
+ pg_catalog | pg_stat_replication         | view | postgres
+ pg_catalog | pg_stat_ssl                 | view | postgres
+ pg_catalog | pg_stat_sys_indexes         | view | postgres
+ pg_catalog | pg_stat_sys_tables          | view | postgres
+ pg_catalog | pg_stat_user_functions      | view | postgres
+ pg_catalog | pg_stat_user_indexes        | view | postgres
+ pg_catalog | pg_stat_user_tables         | view | postgres
+ pg_catalog | pg_stat_wal_receiver        | view | postgres
+ pg_catalog | pg_stat_xact_all_tables     | view | postgres
+ pg_catalog | pg_stat_xact_sys_tables     | view | postgres
+ pg_catalog | pg_stat_xact_user_functions | view | postgres
+ pg_catalog | pg_stat_xact_user_tables    | view | postgres
+ pg_catalog | pg_statio_all_indexes       | view | postgres
+ pg_catalog | pg_statio_all_sequences     | view | postgres
+ pg_catalog | pg_statio_all_tables        | view | postgres
+ pg_catalog | pg_statio_sys_indexes       | view | postgres
+ pg_catalog | pg_statio_sys_sequences     | view | postgres
+ pg_catalog | pg_statio_sys_tables        | view | postgres
+ pg_catalog | pg_statio_user_indexes      | view | postgres
+ pg_catalog | pg_statio_user_sequences    | view | postgres
+ pg_catalog | pg_statio_user_tables       | view | postgres
+ pg_catalog | pg_stats                    | view | postgres
+(30 rows)
+
+```
+例如表相关的计数：
+```
+postgres=# \d pg_stat_all_tables
+            View "pg_catalog.pg_stat_all_tables"
+       Column        |           Type           | Modifiers 
+---------------------+--------------------------+-----------
+ relid               | oid                      | 
+ schemaname          | name                     | 
+ relname             | name                     | 
+ seq_scan            | bigint                   | 
+ seq_tup_read        | bigint                   | 
+ idx_scan            | bigint                   | 
+ idx_tup_fetch       | bigint                   | 
+ n_tup_ins           | bigint                   | 
+ n_tup_upd           | bigint                   | 
+ n_tup_del           | bigint                   | 
+ n_tup_hot_upd       | bigint                   | 
+ n_live_tup          | bigint                   | 
+ n_dead_tup          | bigint                   | 
+ n_mod_since_analyze | bigint                   | 
+ last_vacuum         | timestamp with time zone | 
+ last_autovacuum     | timestamp with time zone | 
+ last_analyze        | timestamp with time zone | 
+ last_autoanalyze    | timestamp with time zone | 
+ vacuum_count        | bigint                   | 
+ autovacuum_count    | bigint                   | 
+ analyze_count       | bigint                   | 
+ autoanalyze_count   | bigint                   | 
+
+```
+
+查看某张表的计数，例如
+```
+postgres=# select * from pg_stat_all_tables where relname='oc_accounts';  
+-[ RECORD 1 ]-------+------------
+relid               | 16766
+schemaname          | public
+relname             | oc_accounts
+seq_scan            | 0
+seq_tup_read        | 0
+idx_scan            | 0
+idx_tup_fetch       | 0
+n_tup_ins           | 0
+n_tup_upd           | 0
+n_tup_del           | 0
+n_tup_hot_upd       | 0
+n_live_tup          | 0
+n_dead_tup          | 0
+n_mod_since_analyze | 0
+last_vacuum         | 
+last_autovacuum     | 
+last_analyze        | 
+last_autoanalyze    | 
+vacuum_count        | 0
+autovacuum_count    | 0
+analyze_count       | 0
+autoanalyze_count   | 0
+
+```
+
+autovacuum launcher进程，在一个autovacuum_naptime周期内，轮询所有的database内的计数，并根据计数以及设置的阈值（表级、或全库级阈值）判断是否需要对表实施vacuum或analyze的动作。  
+触发公式为
+```
+vacuum threshold = vacuum base threshold + vacuum scale factor * number of tuples
+analyze threshold = analyze base threshold + analyze scale factor * number of tuples
+```
+
+postgres.conf 对应参数
+```
+#------------------------------------------------------------------------------
+# AUTOVACUUM PARAMETERS
+#------------------------------------------------------------------------------
+
+#autovacuum = on                        # Enable autovacuum subprocess?  'on'
+                                        # requires track_counts to also be on.
+#log_autovacuum_min_duration = -1       # -1 disables, 0 logs all actions and
+                                        # their durations, > 0 logs only
+                                        # actions running at least this number
+                                        # of milliseconds.
+#autovacuum_max_workers = 3             # max number of autovacuum subprocesses
+                                        # (change requires restart)
+#autovacuum_naptime = 1min              # time between autovacuum runs
+#autovacuum_vacuum_threshold = 50       # min number of row updates before
+                                        # vacuum
+#autovacuum_analyze_threshold = 50      # min number of row updates before
+                                        # analyze
+#autovacuum_vacuum_scale_factor = 0.2   # fraction of table size before vacuum
+#autovacuum_analyze_scale_factor = 0.1  # fraction of table size before analyze
+#autovacuum_freeze_max_age = 200000000  # maximum XID age before forced vacuum
+                                        # (change requires restart)
+#autovacuum_multixact_freeze_max_age = 400000000        # maximum multixact age
+                                        # before forced vacuum
+                                        # (change requires restart)
+#autovacuum_vacuum_cost_delay = 20ms    # default vacuum cost delay for
+                                        # autovacuum, in milliseconds;
+                                        # -1 means use vacuum_cost_delay
+#autovacuum_vacuum_cost_limit = -1      # default vacuum cost limit for
+                                        # autovacuum, -1 means use
+                                        # vacuum_cost_limit
+
+
+```
+
 
 
 ## PostgreSQL TOAST 技术
@@ -1123,7 +1297,6 @@ pg_stat_statements
 ## 全文本搜索
 使用gin 或者rum索引
 
-## pgbench
 
 ## 集群
 Plproxy
