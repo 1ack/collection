@@ -54,10 +54,6 @@
 * 提供丰富的接口，很容易扩展功能 (Extension)
 * 支持使用流行的语言写自定义函数 (PL/Perl PL/Python PL/pgSQL)
 
-
-能够并发地创建或删除索引（不锁表）；为表添加新的空字段不锁表，瞬间完成。
-这意味着可以随时在线上按需添加移除索引，添加字段，不影响业务。
-
 [PostgreSQL优于其他开源数据库的特性：Part I](https://postgres.fun/20151209093052.html)
 
 [PostgreSQL优于其他开源数据库的特性：Part II](https://postgres.fun/20151211151702.html)
@@ -368,6 +364,14 @@ create index idx on tbl (col) where id=1;
 create index idx1 on tbl (id) where cond1 <> xx;
 ```
 
+
+正常情况下Postgresql建立普通btree索引时会阻塞DML(insert,update,delete)操作，直到索引完成，期间读操作不受阻塞。Postgresql提供了在线创建索引的功能concurrently，使用方法
+```
+create index concurrently index_name on tablename();
+```
+
+使用concurrently的代价  
+不使用这个参数建索引时DB只扫描一次表，使用这个参数时，会引发DB扫两次表，同时等待所有潜在会读到该索引的事务结束，系统的CPU和IO，内存等会受影响。
 
 
 ### Btree
