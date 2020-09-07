@@ -11,39 +11,41 @@
     - [bit类型](#bit类型)
     - [区间类型](#区间类型)
     - [文本搜索类型](#文本搜索类型)
+  - [postgres 索引](#postgres-索引)
+    - [Btree](#btree)
+    - [Hash](#hash)
+    - [GIN (Generalized Inverted Index)](#gin-generalized-inverted-index)
   - [语法](#语法)
     - [自增序列](#自增序列)
-    - [表继承](#表继承)
-    - [拆分表](#拆分表)
-    - [触发器](#触发器)
-    - [Window Function](#window-function)
     - [grouping sets](#grouping-sets)
   - [PostgreSQL的模式、表空间、用户间的关系](#postgresql的模式表空间用户间的关系)
     - [模式](#模式)
     - [表空间](#表空间)
     - [角色和用户的关系](#角色和用户的关系)
-  - [PostgreSQL TOAST 技术](#postgresql-toast-技术)
   - [事务](#事务)
     - [事务隔离级别](#事务隔离级别)
     - [锁机制](#锁机制)
+      - [表锁](#表锁)
+      - [行锁](#行锁)
+      - [Advisory lock 咨询锁](#advisory-lock-咨询锁)
     - [MVCC](#mvcc)
+  - [秒杀](#秒杀)
+    - [ad lock 用于秒杀](#ad-lock-用于秒杀)
+    - [skip locked](#skip-locked)
+  - [分页](#分页)
   - [VACUUM](#vacuum)
+  - [PostgreSQL TOAST 技术](#postgresql-toast-技术)
   - [extension](#extension)
-    - [FDW](#fdw)
+    - [file_fdw](#file_fdw)
   - [postgres 主备配置](#postgres-主备配置)
   - [postgres docker部署](#postgres-docker部署)
-  - [postgres 索引](#postgres-索引)
-    - [Btree](#btree)
-    - [Hash](#hash)
-    - [GIN (Generalized Inverted Index)](#gin-generalized-inverted-index)
   - [OLTP OLAP](#oltp-olap)
   - [系统监控](#系统监控)
   - [全文本搜索](#全文本搜索)
   - [pgbench](#pgbench)
   - [集群](#集群)
-  - [并发](#并发)
-    - [ad lock 用于秒杀](#ad-lock-用于秒杀)
-    - [skip locked](#skip-locked)
+  - [大表创建](#大表创建)
+  - [使用规范](#使用规范)
 
 # postgres knowledge
 ## postgres 的特点
@@ -343,21 +345,160 @@ bit类型操作
 tsvector 
 tsquery
 
+## postgres 索引
+postgres支持的索引包括：btree, hash, gin, gist, sp-gist, brin, bloom(扩展接口), rum(扩展接口)
+
+支持基于表达式建立索引
+
+```
+SELECT * FROM test1 WHERE lower(col1) = 'value';
+CREATE INDEX test1_lower_col1_idx ON test1 (lower(col1));
+```
+
+支持部分索引
+
+```
+select * from tbl where id=1 and col=?; -- 其中id=1为固定的条件  
+create index idx on tbl (col) where id=1;  
+```
+
+普通索引下，where 子句中使用!=或<>操作符，pg会放弃使用索引，这时最有效的方法是使用部分索引
+
+```
+create index idx1 on tbl (id) where cond1 <> xx;
+```
+
+
+
+### Btree
+CREATE INDEX命令默认创建 B-tree 索引。
+
+主键和唯一键会自动创建Btree索引，无需另外单独再为主键和唯一键创建索引。
+Btree索引适合处理能够按顺序存储的数据的
+```
+=,<,>,<=,>=
+```
+以及等效这些操作符的其他操作,如
+```
+BETWEEN，IN以及IS NULL和以字符串开头的模糊查询
+```
+
+Btree索引要想起作用,where条件必须包含第一个索引列。最左匹配原则
+
+内部使用了B+树，压缩了B树的层级，能够有效节省数据库的IO查找操作
+
+### Hash
+pg 10前没有使用WAL记录，系统崩溃后需要重建,不建议使用
+
+### GIN (Generalized Inverted Index)
+通用倒排索引  
+一般用来索引复合类型对象中的元素 
+
+GIN的标准中定义了用于一维数组的操作符，如包含“@>”，被包含“<@”，相等“=”，重叠操作符“&&”。
+```
+postgres=# create table person (
+postgres(#   id  int, 
+postgres(#   name varchar(20),
+postgres(#   phone varchar(32)[]
+postgres(# );
+CREATE TABLE
+postgres=# create index idx_phone on person using gin(phone);
+CREATE INDEX
+postgres=# insert into person values(1,'April','{"0000000","1234567"}');
+INSERT 0 1
+postgres=# insert into person values(2,'Harris','{"1111111","7654321"}');
+INSERT 0 1
+
+
+查询号码'1111111'属于谁
+postgres=# select * from person where phone @> array['1111111'::varchar(32)];
+ id |  name  |       phone       
+----+--------+-------------------
+  2 | Harris | {1111111,7654321}
+(1 row)
+```
+
+GIN索引的插入操作与btree索引不同，对于btree索引，基表增加一行，btree索引也是增加一个索引项。而对于GIN索引基表增加一行，GIN索引可能需要增加多个索引项。所以GIN索引的插入是低效的。所以PG为了解决这个问题，实现了两种插入模式：
+* 正常模式  
+在该模式下，基表元组产生的新的GIN索引，会被立即插入到GIN索引
+
+* fastupdate模式  
+在该模式下，基表元组产生的新的GIN索引，会被插入到pending list中，而pending list会在一定条件下批量的插入到GIN索引中
+
 ## 语法
+
 ### 自增序列
 意义：并发获取nextval时，保证唯一和递增，但可能存在漏空
-### 表继承
 
-### 拆分表
+如何保证分区表的主键序列全局唯一？
 
-### 触发器
+```
+postgres=# create sequence seq_tab1 increment by 10000 start with 1;
+CREATE SEQUENCE
+postgres=# create sequence seq_tab2 increment by 10000 start with 2;
+CREATE SEQUENCE
+postgres=# create sequence seq_tab3 increment by 10000 start with 3;
+CREATE SEQUENCE
+postgres=# create table tab1 (id int primary key default nextval('seq_tab1') check(mod(id,10000)=1), info text);
+CREATE TABLE
+postgres=# create table tab2 (id int primary key default nextval('seq_tab2') check(mod(id,10000)=2), info text);
+CREATE TABLE
+postgres=# create table tab3 (id int primary key default nextval('seq_tab3') check(mod(id,10000)=3), info text);
+CREATE TABLE
+postgres=# insert into tab1 (info) select generate_series(1,10);
+INSERT 0 10
+postgres=# insert into tab2 (info) select generate_series(1,10);
+INSERT 0 10
+postgres=# insert into tab3 (info) select generate_series(1,10);
+INSERT 0 10
+postgres=# select * from tab1;
+  id   | info 
+-------+------
+     1 | 1
+ 10001 | 2
+ 20001 | 3
+ 30001 | 4
+ 40001 | 5
+ 50001 | 6
+ 60001 | 7
+ 70001 | 8
+ 80001 | 9
+ 90001 | 10
+(10 rows)
 
+postgres=# select * from tab2;
+  id   | info 
+-------+------
+     2 | 1
+ 10002 | 2
+ 20002 | 3
+ 30002 | 4
+ 40002 | 5
+ 50002 | 6
+ 60002 | 7
+ 70002 | 8
+ 80002 | 9
+ 90002 | 10
+(10 rows)
 
-
-### Window Function
+postgres=# select * from tab3;
+  id   | info 
+-------+------
+     3 | 1
+ 10003 | 2
+ 20003 | 3
+ 30003 | 4
+ 40003 | 5
+ 50003 | 6
+ 60003 | 7
+ 70003 | 8
+ 80003 | 9
+ 90003 | 10
+(10 rows)
+```
 
 ### grouping sets
-分组函数，每个分组集合单独进行聚合计算,使用sql直接出报表很方便，一个sql就把明细和汇总值都得到
+分组函数，每个分组集合单独进行聚合计算,用于业务有多个维度的分析需求
 ```
 postgres=# select * from t;
  id |   name   | class | score 
@@ -521,6 +662,279 @@ postgres=# \du
  replica        | Replication                                                | {}
 
 ```
+
+## 事务
+Postgres数据库与其他数据库最大的区别是，DDL能放入事务中，删表，TRUNCATE，创建函数，索引，都可以放在事务里原子生效，或者回滚。
+
+因为有这个功能，所以非常适合把PostgreSQL作为Sharding的分布式数据系统的底层数据库。比如，在Sharding中，常常需要在多个结点中建相同的表，这时可以考虑把建表语句放在同一个事务中，这样就可以在各个节点上先启动一个事务，然后执行建表语句。如果某个节点执行失败，也可以把前面已执行建表成功的操作回滚掉，这样就不会出现部分节点建表成功，部分节点失败的情况。
+
+一个事务里通过RENAME，完成两张表的王车易位
+```
+BEGIN;
+-- You probably want to make sure that no one else is
+-- INSERT / UPDATE / DELETE'ing from the original table, otherwise
+-- those changes may be lost during this switchover process. One way
+-- to do that would be via:
+-- LOCK TABLE "table" IN SHARE ROW EXCLUSIVE mode;
+CREATE TABLE "table_new" (LIKE "table");
+INSERT INTO "table_new" ...;
+
+-- The ALTER TABLE ... RENAME TO command takes an Access Exclusive lock on "table",
+-- but these final few statements should be fast.
+ALTER TABLE "table" RENAME TO "table_old";
+ALTER TABLE "table_new" RENAME TO "table";
+DROP TABLE "table_old";
+
+COMMIT;
+```
+
+### 事务隔离级别
+数据库的隔离级别有四种
+* 读未提交（READ UNCOMMITTED）
+* 读已提交（READ COMMITTED）
+* 重复读（REPEATABLE READ）
+* 串行化（SERIALIZABLE）
+
+对于并发事务，我们不希望发生的行为如下：
+
+* 脏读：一个事务读取了另一个未提交的事务写入的数据。
+* 不可重复读：一个事务重新读取前面读取过的数据时，发现该数据已改变。
+* 幻读：一个事务开始后，需要根据数据库中现有的数据做一些更新，于是重新执行一个查询，返回符合查询条件的行，这时发现这些行因为其它最近提交的事务而发生了改变，导致现有事务如果再进行下去可能发发生逻辑上的错误。
+* 序列化异常：成功提交一组事务的结果与按照各种可能顺序运行这些事务的结果不一致。
+  
+![pg_isolation](images/pg_isolation.jpg)
+
+在PostgreSQL中，可以请求四种标准事务隔离级别中的任意一种，但是内部只实现了三种不同的隔离级别，即 PostgreSQL 的读未提交模式的行为和读已提交相同
+
+[Are postgresql transaction levels repeatable read and serializable the same?]([images/pg_isolation.jpg](https://stackoverflow.com/questions/30668991/are-postgresql-transaction-levels-repeatable-read-and-serializable-the-same))
+
+[PostgreSQL 9.6.19 Documentation: Transaction Isolation](https://www.postgresql.org/docs/9.6/transaction-iso.html)
+
+PostgreSQL 数据库的默认事务隔离级别是 Read committed 
+```
+postgres=# show default_transaction_isolation; 
+ default_transaction_isolation 
+-------------------------------
+ read committed
+(1 row)
+```
+
+### 锁机制
+#### 表锁
+```
+LOCK [ TABLE ] [ ONLY ] name [ * ] [, ...] [ IN lockmode MODE ] [ NOWAIT ]
+```
+lockmode包括以下几种：
+
+ACCESS SHARE | ROW SHARE | ROW EXCLUSIVE | SHARE UPDATE EXCLUSIVE| SHARE | SHARE ROW EXCLUSIVE | EXCLUSIVE | ACCESS EXCLUSIVE
+
+LOCK TABLE命令用于获取一个表锁，获取过程将阻塞一直到等待的锁被其他事务释放。如果使用NOWAIT关键字则如果获取不到锁，将不会等待而是直接返回，放弃执行当前指令并抛出一个错误(error)。一旦获取到锁，将一直持有锁直到事务结束。(没有主动释放锁的命令，锁总是会在事务结束的时候被释放)。
+
+当使用自动获取锁的模式的时候，PostgreSQL总是尽可能地使用限制最小的模式。LOCK TABLE命令使我们可以自己定义锁的限制大小。比如一个应用程序使用事务在读提交(Read Committed isolation level)模式下需要保证数据库的数据在事务期间保持稳定，于是可以使用SHARE锁模式在读取前对表进行加锁。这可以防止并发的数据改变并且可以保证后续的事务对这个表的读取不会读到没有提交的数据，因为SHARE锁和由写入事务持有的ROW EXCLUSIVE锁是冲突的，所以对于想要使用SHARE锁对表进行加锁的事务，将会等到它之前所有持有该表的ROW EXCLUSIVE锁的事务commit或者是roll back。因此，一旦获取了表的SHARE锁，将不会有没有提交的数据，同样也不会有其他事务能够对表数据进行改变，直到当前事务释放SHARE锁。
+
+![postgres 表锁模式](images/pg_tablelock.jpg)
+
+#### 行锁
+一个事务的多个子事务可以在同一行上获取冲突的行锁，但不同的事务不能在同一行上获取冲突的行锁。  
+行锁不影响数据query，只阻塞在同一行上的写操作和加锁操作
+
+主动加锁
+```
+select * from db_user where name='lisi' for update;
+```
+默认加锁
+```
+UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 11111;
+```
+
+#### Advisory lock 咨询锁
+postgres提供给应用层使用的锁，数据库本身不会主动使用 
+库级别的锁，分为会话锁和事务锁，比表锁、行锁轻量 
+pg_try_advisory_lock(id)  获取则占住，没有获取成功则返回失败
+用于高并发更新同一行数据的场景，见[秒杀](##秒杀)
+
+
+![postgres 行模式](images/pg_rowlock.jpg)
+
+### MVCC
+PostgreSQL利用多版本并发控制(MVCC)来维护数据的一致性。每个事务看到的都只是一小段时间之前的数据快照(一个数据库版本)，而不是数据的当前状态。
+
+
+
+MVCC的实现方法有两种：
+
+1.写新数据时，把旧数据移到一个单独的地方，如回滚段中，其他人读数据时，从回滚段中把旧的数据读出来；
+
+2.写数据时，旧数据不删除，而是把新数据插入。
+
+PostgreSQL数据库使用第二种方法，而Oracle数据库和MySQL中的innodb引擎使用的是第一种方法。
+
+与oracle数据库和MySQL中的innodb引擎相比较，PostgreSQL的MVCC实现方式的优缺点如下。
+
+优点：
+
+1.事务回滚可以立即完成，无论事务进行了多少操作；
+
+2.数据可以进行很多更新，不必像Oracle和MySQL的Innodb引擎那样需要经常保证回滚段不会被用完，也不会像oracle数据库那样经常遇到“ORA-1555”错误的困扰；
+
+缺点：
+
+1.旧版本数据需要清理。PostgreSQL清理旧版本的命令成为Vacuum；
+
+2.旧版本的数据会导致查询更慢一些，因为旧版本的数据存在于数据文件中，查询时需要扫描更多的数据块
+
+## 秒杀
+[PostgreSQL 秒杀场景优化](https://github.com/digoal/blog/blob/master/201509/20150914_01.md)  
+[PostgreSQL 秒杀4种方法 - 增加 批量流式加减库存 方法](https://github.com/digoal/blog/blob/master/201801/20180105_03.md)
+
+### ad lock 用于秒杀
+秒杀场景的典型瓶颈在于对同一条记录的多次更新请求，然后只有一个或者少量请求是成功的，其他请求是以失败或更新不到告终。  
+使用一个标记位来表示这条记录是否已经被更新，或者记录更新的次数
+```
+update tbl set xxx=xxx,upd_cnt=upd_cnt+1 where id=pk and upd_cnt+1<=5;   -- 假设可以秒杀5台
+```
+这种方法的弊端：
+
+获得锁的用户在处理这条记录时，可能成功，也可能失败，或者可能需要很长时间，（例如数据库响应慢）在它结束事务前，其他会话只能等着。
+
+使用for update nowait的方式
+```
+begin;  
+select 1 from tbl where id=pk for update nowait;  --  如果用户无法即刻获得锁，则返回错误。从而这个事务回滚。  
+update tbl set xxx=xxx,upd_cnt=upd_cnt+1 where id=pk and upd_cnt+1<=5;  
+end;  
+```
+这种方法可以减少用户的等待时间，因为无法即刻获得锁后就直接返回了。
+
+但是这种方法也存在一定的弊端，对于一个商品，如果可以秒杀多台的话，使用1条记录来存储多台，降低了秒杀的并发性。
+
+因为这里使用的是行锁。
+
+postgreSQL提供了一个锁类型，advisory锁，这种锁比行锁更加轻量，支持会话级别和事务级别。（但是需要注意ID是全局的，否则会相互干扰，也就是说，所有参与秒杀或者需要用到advisory lock的ID需要在单个库内保持全局唯一）
+```
+update tbl set xxx=xxx,upd_cnt=upd_cnt+1 where id=pk and upd_cnt+1<=5 and pg_try_advisory_xact_lock(:id);  
+```
+
+```
+pg_try_advisory_xact_lock() 
+  Obtain exclusive transaction level advisory lock if available
+```
+
+### skip locked
+
+```postgres=# CREATE TABLE tb1(id int,v int);
+CREATE TABLE
+postgres=# insert into tb1 values (1,100);
+INSERT 0 1
+postgres=# insert into tb1 values (2,101);
+INSERT 0 1
+postgres=# select * from tb1;
+ id |  v  
+----+-----
+  1 | 100
+  2 | 101
+(2 rows)
+
+postgres=# begin;
+BEGIN
+postgres=# select * from tb1 order by 1 limit 1 for update skip locked;
+ id |  v  
+----+-----
+  1 | 100
+(1 row)
+
+```
+另开一个session,下面可见取到的是a为2的记录，跳过了a=1的记录，而且不需要等待
+```
+postgres=# select * from tb1;
+ id |  v  
+----+-----
+  1 | 100
+  2 | 101
+(2 rows)
+
+postgres=# begin;
+BEGIN
+postgres=# select * from tb1 order by 1 limit 1 for update skip locked;
+ id |  v  
+----+-----
+  2 | 101
+(1 row)
+```
+
+
+## 分页
+获取总条数使用count(*)会很慢，若允许使用评估行数，可以创建一个函数，从explain中抽取返回的记录数
+
+```
+CREATE OR REPLACE FUNCTION countit(text)                    
+RETURNS float4           
+LANGUAGE plpgsql AS          
+$DECLARE               
+    v_plan json;                
+BEGIN                      
+    EXECUTE 'EXPLAIN (FORMAT JSON) '||$1                                
+        INTO v_plan;                                                                       
+    RETURN v_plan #>> '{0,Plan,"Plan Rows"}';  
+END;  
+$;  
+```
+
+```
+postgres=#  create table t1234(id int, info text);  
+CREATE TABLE
+postgres=# insert into t1234 select generate_series(1,1000000),'test';  
+INSERT 0 1000000
+postgres=# analyze t1234; 
+ANALYZE
+postgres=#  select countit('select * from t1234 where id<1000');  
+ countit 
+---------
+     970
+(1 row)
+
+postgres=# explain select * from t1234 where id<1000;  
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Seq Scan on t1234  (cost=0.00..17906.00 rows=970 width=9)
+   Filter: (id < 1000)
+(2 rows)
+
+postgres=# select countit('select * from t1234 where id between 1 and 1000 or (id between 100000 and 101000)');
+ countit 
+---------
+    1907
+(1 row)
+
+postgres=# explain select * from t1234 where id between 1 and 1000 or (id between 100000 and 101000);
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Seq Scan on t1234  (cost=0.00..25406.00 rows=1907 width=9)
+   Filter: (((id >= 1) AND (id <= 1000)) OR ((id >= 100000) AND (id <= 101000)))
+(2 rows)
+
+```
+
+## VACUUM
+[PostgreSQL 9.6.19 Documentation: Routine Vacuuming](https://www.postgresql.org/docs/9.6/routine-vacuuming.html)
+
+PostgreSQL数据库管理工作中,定期vacuum是一个重要的工作。  
+vacuum的效果：
+
+1. 释放原先更新/删除行所占据的磁盘空间。
+2. 更新POSTGRESQL查询计划中使用的统计数据。
+3. 更新visibility map，加速 index-only scans。
+4. 防止因事务ID的重置而丢失非常老的数据。
+
+第一点的原因是PostgreSQL数据的插入,更新,删除操作并不是真正放到数据库空间.如果不定期释放空间的话,由于数据太多,查询速度会巨降.  
+
+第二点的原因是PostgreSQL在做查询处理的时候,为了是查询速度提高,会根据统计数据来确定执行计划.如果不及时更新的话,查询的效果可能不如预期.  
+
+第四点的原因是PostgreSQL中每一个事务都会产生一个事务ID,但这个数字是有上限的. 当事务ID达到最大值后,会重新从最小值开始循环.这样如果不及时把以前的数据释放掉的话,原来的老数据会因为事务ID的丢失而丢失掉.
+
+虽然Postgresql中有自动的vacuum (AUTOVACUUM实例)，但是如果是大批量的数据IO可能会导致自动执行很慢，需要配合手动执行以及自己的脚本来清理数据库。
+
+
 ## PostgreSQL TOAST 技术
 [PostgreSQL TOAST 技术理解](https://cloud.tencent.com/developer/article/1004455)
 
@@ -589,116 +1003,104 @@ postgres=# select chunk_id,chunk_seq,length(chunk_data) from pg_toast.pg_toast_2
 
 ```
 
-## 事务
-Postgres数据库与其他数据库最大的区别是，DDL能放入事务中，删表，TRUNCATE，创建函数，索引，都可以放在事务里原子生效，或者回滚。
-
-因为有这个功能，所以非常适合把PostgreSQL作为Sharding的分布式数据系统的底层数据库。比如，在Sharding中，常常需要在多个结点中建相同的表，这时可以考虑把建表语句放在同一个事务中，这样就可以在各个节点上先启动一个事务，然后执行建表语句。如果某个节点执行失败，也可以把前面已执行建表成功的操作回滚掉，这样就不会出现部分节点建表成功，部分节点失败的情况。
-
-一个事务里通过RENAME，完成两张表的王车易位
-```
-BEGIN;
--- You probably want to make sure that no one else is
--- INSERT / UPDATE / DELETE'ing from the original table, otherwise
--- those changes may be lost during this switchover process. One way
--- to do that would be via:
--- LOCK TABLE "table" IN SHARE ROW EXCLUSIVE mode;
-CREATE TABLE "table_new" (LIKE "table");
-INSERT INTO "table_new" ...;
-
--- The ALTER TABLE ... RENAME TO command takes an Access Exclusive lock on "table",
--- but these final few statements should be fast.
-ALTER TABLE "table" RENAME TO "table_old";
-ALTER TABLE "table_new" RENAME TO "table";
-DROP TABLE "table_old";
-
-COMMIT;
-```
-
-### 事务隔离级别
-数据库的隔离级别有四种
-* 读未提交（READ UNCOMMITTED）
-* 读已提交（READ COMMITTED）
-* 重复读（REPEATABLE READ）
-* 串行化（SERIALIZABLE）
-
-对于并发事务，我们不希望发生的行为如下：
-
-* 脏读：一个事务读取了另一个未提交的事务写入的数据。
-* 不可重复读：一个事务重新读取前面读取过的数据时，发现该数据已改变。
-* 幻读：一个事务开始后，需要根据数据库中现有的数据做一些更新，于是重新执行一个查询，返回符合查询条件的行，这时发现这些行因为其它最近提交的事务而发生了改变，导致现有事务如果再进行下去可能发发生逻辑上的错误。
-* 序列化异常：成功提交一组事务的结果与按照各种可能顺序运行这些事务的结果不一致。
-  
-![pg_isolation](images/pg_isolation.jpg)
-
-在PostgreSQL中，可以请求四种标准事务隔离级别中的任意一种，但是内部只实现了三种不同的隔离级别，即 PostgreSQL 的读未提交模式的行为和读已提交相同
-
-[Are postgresql transaction levels repeatable read and serializable the same?]([images/pg_isolation.jpg](https://stackoverflow.com/questions/30668991/are-postgresql-transaction-levels-repeatable-read-and-serializable-the-same))
-
-[PostgreSQL 9.6.19 Documentation: Transaction Isolation](https://www.postgresql.org/docs/9.6/transaction-iso.html)
-
-PostgreSQL 数据库的默认事务隔离级别是 Read committed 
-```
-postgres=# show default_transaction_isolation; 
- default_transaction_isolation 
--------------------------------
- read committed
-(1 row)
-```
-
-### 锁机制
-
-### MVCC
-PostgreSQL利用多版本并发控制(MVCC)来维护数据的一致性。每个事务看到的都只是一小段时间之前的数据快照(一个数据库版本)，而不是数据的当前状态。
-
-
-MVCC的实现方法有两种：
-
-1.写新数据时，把旧数据移到一个单独的地方，如回滚段中，其他人读数据时，从回滚段中把旧的数据读出来；
-
-2.写数据时，旧数据不删除，而是把新数据插入。
-
-PostgreSQL数据库使用第二种方法，而Oracle数据库和MySQL中的innodb引擎使用的是第一种方法。
-
-与oracle数据库和MySQL中的innodb引擎相比较，PostgreSQL的MVCC实现方式的优缺点如下。
-
-优点：
-
-1.事务回滚可以立即完成，无论事务进行了多少操作；
-
-2.数据可以进行很多更新，不必像Oracle和MySQL的Innodb引擎那样需要经常保证回滚段不会被用完，也不会像oracle数据库那样经常遇到“ORA-1555”错误的困扰；
-
-缺点：
-
-1.旧版本数据需要清理。PostgreSQL清理旧版本的命令成为Vacuum；
-
-2.旧版本的数据会导致查询更慢一些，因为旧版本的数据存在于数据文件中，查询时需要扫描更多的数据块
-
-## VACUUM
-[PostgreSQL 9.6.19 Documentation: Routine Vacuuming](https://www.postgresql.org/docs/9.6/routine-vacuuming.html)
-
-PostgreSQL数据库管理工作中,定期vacuum是一个重要的工作。  
-vacuum的效果：
-
-1. 释放原先更新/删除行所占据的磁盘空间。
-2. 更新POSTGRESQL查询计划中使用的统计数据。
-3. 更新visibility map，加速 index-only scans。
-4. 防止因事务ID的重置而丢失非常老的数据。
-
-第一点的原因是PostgreSQL数据的插入,更新,删除操作并不是真正放到数据库空间.如果不定期释放空间的话,由于数据太多,查询速度会巨降.  
-
-第二点的原因是PostgreSQL在做查询处理的时候,为了是查询速度提高,会根据统计数据来确定执行计划.如果不及时更新的话,查询的效果可能不如预期.  
-
-第四点的原因是PostgreSQL中每一个事务都会产生一个事务ID,但这个数字是有上限的. 当事务ID达到最大值后,会重新从最小值开始循环.这样如果不及时把以前的数据释放掉的话,原来的老数据会因为事务ID的丢失而丢失掉.
-
-虽然Postgresql中有自动的vacuum，但是如果是大批量的数据IO可能会导致自动执行很慢，需要配合手动执行以及自己的脚本来清理数据库。
-
 ## extension
-通过extension扩展能力，可以动态加载到系统空间
-fdw系列插件，使得pg可以从任意数据库上读取数据（ORACLE,SQL SERVER,MYSQL,MONDODB)
-[awesome-postgres]https://github.com/dhamaniasad/awesome-postgres
+PostgreSQL具有插件功能，通过不同的插件拓展，实现数据库本身不包含的功能，以满足用户的需求
 
-### FDW
+FDW：外部数据包装器（Foreign Data Wrapper）。  
+通过FDW，用户可以用统一的方式从Pg中访问各类外部数据源（ORACLE,SQL SERVER,MYSQL,MONDODB)。
 
+### file_fdw
+使用file_fdw插件，可以通过sql读取解析文件
+```
+postgres=# CREATE EXTENSION file_fdw;
+CREATE EXTENSION
+postgres=# CREATE SERVER fileserver FOREIGN DATA WRAPPER file_fdw;
+CREATE SERVER
+postgres=# CREATE FOREIGN TABLE meminfo 
+postgres-# (stat text, value text) 
+postgres-# SERVER fileserver 
+postgres-# OPTIONS (filename '/proc/meminfo', format 'csv', delimiter ':');
+CREATE FOREIGN TABLE
+postgres=# SELECT * FROM meminfo;
+       stat        |         value          
+-------------------+------------------------
+ MemTotal          |         8008704 kB
+ MemFree           |           194796 kB
+ MemAvailable      |     7134400 kB
+ Buffers           |           260136 kB
+ Cached            |           6687504 kB
+ SwapCached        |             0 kB
+ Active            |           4010964 kB
+ Inactive          |         3212696 kB
+ Active(anon)      |      362516 kB
+ Inactive(anon)    |     69952 kB
+ Active(file)      |     3648448 kB
+ Inactive(file)    |   3142744 kB
+ Unevictable       |            0 kB
+ Mlocked           |                0 kB
+ SwapTotal         |              0 kB
+ SwapFree          |               0 kB
+ Dirty             |                584 kB
+ Writeback         |              0 kB
+ AnonPages         |         275948 kB
+ Mapped            |            292076 kB
+ Shmem             |             156448 kB
+ Slab              |              485612 kB
+ SReclaimable      |      454304 kB
+ SUnreclaim        |         31308 kB
+ KernelStack       |         4496 kB
+ PageTables        |         12552 kB
+ NFS_Unstable      |           0 kB
+ Bounce            |                 0 kB
+ WritebackTmp      |           0 kB
+ CommitLimit       |      4004352 kB
+ Committed_AS      |     2378784 kB
+ VmallocTotal      |    34359738367 kB
+ VmallocUsed       |        20080 kB
+ VmallocChunk      |    34359712252 kB
+ HardwareCorrupted |      0 kB
+ AnonHugePages     |      61440 kB
+ CmaTotal          |               0 kB
+ CmaFree           |                0 kB
+ HugePages_Total   |        0
+ HugePages_Free    |         0
+ HugePages_Rsvd    |         0
+ HugePages_Surp    |         0
+ Hugepagesize      |        2048 kB
+ DirectMap4k       |        87920 kB
+ DirectMap2M       |      5154816 kB
+ DirectMap1G       |      5242880 kB
+(46 rows)
+
+postgres=# SELECT * FROM meminfo WHERE stat IN ('MemTotal','MemFree');
+   stat   |        value        
+----------+---------------------
+ MemTotal |         8008704 kB
+ MemFree  |           193540 kB
+(2 rows)
+
+```
+
+postgres10支持从命令行输出读取信息
+```
+CREATE FOREIGN TABLE process_status (
+  username TEXT,
+  pid      INTEGER,
+  cpu      NUMERIC,
+  mem      NUMERIC,
+  vsz      BIGINT,
+  rss      BIGINT,
+  tty      TEXT,
+  stat     TEXT,
+  start    TEXT,
+  time     TEXT,
+  command  TEXT
+) SERVER fs OPTIONS (
+PROGRAM $$ps aux | awk '{print $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,substr($0,index($0,$11))}' OFS='\037'$$,
+FORMAT 'csv', DELIMITER E'\037', HEADER 'TRUE');
+
+select * from process_status;
+```
 
 ## postgres 主备配置
 复制方式多样：段复制，流复制，触发器复制，逻辑复制，插件复制，多种复制方法。
@@ -707,72 +1109,6 @@ fdw系列插件，使得pg可以从任意数据库上读取数据（ORACLE,SQL S
 提交方式多样：异步提交，同步提交，法定人数同步提交。
 
 ## postgres docker部署
-
-## postgres 索引
-postgres支持的索引包括：btree, hash, gin, gist, sp-gist, brin, bloom, rum
-
-支持基于表达式建立索引
-
-```
-SELECT * FROM test1 WHERE lower(col1) = 'value';
-CREATE INDEX test1_lower_col1_idx ON test1 (lower(col1));
-```
-
-### Btree
-CREATE INDEX命令默认创建 B-tree 索引。
-
-主键和唯一键会自动创建Btree索引，无需另外单独再为主键和唯一键创建索引。
-Btree索引适合处理能够按顺序存储的数据的
-```
-=,<,>,<=,>=
-```
-以及等效这些操作符的其他操作,如
-```
-BETWEEN，IN以及IS NULL和以字符串开头的模糊查询
-```
-
-Btree索引要想起作用,where条件必须包含第一个索引列。最左匹配原则
-
-内部使用了B+树，压缩了B树的层级，能够有效节省数据库的IO查找操作
-
-### Hash
-没有使用WAL记录，系统崩溃后需要重建不建议使用
-
-### GIN (Generalized Inverted Index)
-通用倒排索引  
-一般用来索引复合类型对象中的元素 
-
-GIN的标准中定义了用于一维数组的操作符，如包含“@>”，被包含“<@”，相等“=”，重叠操作符“&&”。
-```
-postgres=# create table person (
-postgres(#   id  int, 
-postgres(#   name varchar(20),
-postgres(#   phone varchar(32)[]
-postgres(# );
-CREATE TABLE
-postgres=# create index idx_phone on person using gin(phone);
-CREATE INDEX
-postgres=# insert into person values(1,'April','{"0000000","1234567"}');
-INSERT 0 1
-postgres=# insert into person values(2,'Harris','{"1111111","7654321"}');
-INSERT 0 1
-
-
-查询号码'1111111'属于谁
-postgres=# select * from person where phone @> array['1111111'::varchar(32)];
- id |  name  |       phone       
-----+--------+-------------------
-  2 | Harris | {1111111,7654321}
-(1 row)
-```
-
-GIN索引的插入操作与btree索引不同，对于btree索引，基表增加一行，btree索引也是增加一个索引项。而对于GIN索引基表增加一行，GIN索引可能需要增加多个索引项。所以GIN索引的插入是低效的。所以PG为了解决这个问题，实现了两种插入模式：
-* 正常模式  
-在该模式下，基表元组产生的新的GIN索引，会被立即插入到GIN索引
-
-* fastupdate模式  
-在该模式下，基表元组产生的新的GIN索引，会被插入到pending list中，而pending list会在一定条件下批量的插入到GIN索引中
-
 
 
 ## OLTP OLAP
@@ -788,71 +1124,23 @@ pg_stat_statements
 ## 集群
 Plproxy
 
-## 并发
-### ad lock 用于秒杀
-```
-pg_try_advisory_xact_lock() 
- Obtain exclusive transaction level advisory lock if available
-```
-```
-create table test(id int primary key, crt_time timestamp);
-insert into test values (1);
-update test set crt_time=now() where id=1 and pg_try_advisory_xact_lock(1);
-```
-热表更新
-```
-create or replace function update() returns void as $$
-declare
-  v_id int;
-begin
-  for v_id in select id from parallel_update_test  -- 扫描式
-  loop  
-    if pg_try_advisory_xact_lock(v_id) then -- 获取到ID的LOCK才会实施更新，否则继续扫描
-      update parallel_update_test set info=array_append(info,1) where id=v_id;
-    end if;
-  end loop;
-end;
-$$ language plpgsql strict;
-```
-何时unlock？
 
-### skip locked
-```postgres=# CREATE TABLE tb1(id int,v int);
+
+## 大表创建
+对于经常变更，或者新增，删除记录的表，应该尽量加快这种表的统计信息采样频率，获得较实时的采样，输出较好的执行计划。  
+例如  
+当垃圾达到表的千分之五时，自动触发垃圾回收。  
+当数据变化达到表的百分之一时，自动触发统计信息的采集。  
+当执行垃圾回收时，不等待，当IOPS较好时可以这么设置。  
+
+```
+postgres=# create table t21(id int, info text) with (
+autovacuum_enabled=on, toast.autovacuum_enabled=on, 
+autovacuum_vacuum_scale_factor=0.005, toast.autovacuum_vacuum_scale_factor=0.005, 
+autovacuum_analyze_scale_factor=0.01, autovacuum_vacuum_cost_delay=0, 
+toast.autovacuum_vacuum_cost_delay=0);
 CREATE TABLE
-postgres=# insert into tb1 values (1,100);
-INSERT 0 1
-postgres=# insert into tb1 values (2,101);
-INSERT 0 1
-postgres=# select * from tb1;
- id |  v  
-----+-----
-  1 | 100
-  2 | 101
-(2 rows)
-
-postgres=# begin;
-BEGIN
-postgres=# select * from tb1 order by 1 limit 1 for update skip locked;
- id |  v  
-----+-----
-  1 | 100
-(1 row)
-
 ```
-另开一个session,下面可见取到的是a为2的记录，跳过了a=1的记录，而且不需要等待
-```
-postgres=# select * from tb1;
- id |  v  
-----+-----
-  1 | 100
-  2 | 101
-(2 rows)
 
-postgres=# begin;
-BEGIN
-postgres=# select * from tb1 order by 1 limit 1 for update skip locked;
- id |  v  
-----+-----
-  2 | 101
-(1 row)
-```
+## 使用规范
+[PostgreSQL 数据库开发规范](https://github.com/digoal/blog/blob/master/201609/20160926_01.md)
