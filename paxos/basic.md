@@ -102,3 +102,11 @@ Classic Paxos：1个实例（确定一个值）写入需要2轮RPC
 Multi Paxos：约为1轮RPC，确定一个值（第一次RPC做了合并）
 
 Fast Paxos：没冲突，1轮RPC确定一个值。有冲突，2轮RPC确定一个值
+
+
+
+一个分布式算法有两个最重要的属性：安全性（Safety）和活性（Liveness）
+Safety是指那些需要保证永远不会发送的事情。
+Liveness是指那些最终一定会发生的事情
+
+Paxos解决了无限期等待问题，也解决了脑裂问题。
