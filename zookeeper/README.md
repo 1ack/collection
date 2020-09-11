@@ -89,7 +89,7 @@ ZooKeeper可以保证如下分布式一致性：
 * 原子性
 * 单一视图 无论客户端连接的是哪个ZooKeeper服务器，其看到的服务端数据模型是一致的
 * 可靠性
-* 实时性 ZooKeeper仅能保证在一定时间内，客户端最终一定能够从服务端上读取到最新的数据状态
+* 实时性（最终一致性） ZooKeeper仅能保证在一定时间内，客户端最终一定能够从服务端上读取到最新的数据状态
   
 ### 集群角色
 * Leader
@@ -101,7 +101,7 @@ Follower和Observer提供读服务
 Observer不参与Leader选举过程，也不参与写操作的“过半写成功”策略，可以在不影响写性能的情况下提升集群的读性能
 
 ## ZAB协议
-ZooKeeper Atomic Broadcast Zooke原子消息广播协议
+ZooKeeper Atomic Broadcast ZooKeeper原子消息广播协议
 支持崩溃恢复的原子广播协议
 
 包括两种基本的模式：
@@ -121,8 +121,32 @@ Leader选举算法：
 
 ZXID 是一个64位的数字，低32位可以看做是一个简单的单调递增计数器，高32位代表Leader周期epoch的编号
 
+ZAB协议和Paxos算法的本质区别在于，两者的设计目标不太一样。  
+ZAB协议主要用于构建一个**分布式的高可用数据主备系统**。例如ZooKeeper，
+而Paxos算法则是用于构建一个**分布式的一致性状态机系统**。
 
 
 
+什么是高可用？可用性的判断标准是啥？
+高可用描述的是一个系统在大部分时间都是可用的，可以为我们提供服务的。  
+
+高可用代表系统即使在发生硬件故障或者系统升级的时候，服务仍然是可用的。一般情况下，我们使用多少个 9 来评判一个系统的可用性，比如 99.9999% 就是代表该系统在所有的运行时间中只有 0.0001% 的时间都是可用的，这样的系统就是非常非常高可用的了！当然，也会有系统如果可用性不太好的话，可能连 9 都上不了。
+
+## Paxos的局限性
+### 恶性竞争锁  
+两个Proposer提出完全相同的议案, 并争取多数议员支持. 我们刚才说过, 一般系统设计类, 议员的策略很简单, 就是谁号大听谁的. 于是这两个Proposer就不断的提升自己的议案编号, 议员不断的接收到递增的Prepare请求, 并立即拒绝上一个. 导致两个Proposer都无法获得绝对多数支持, 从而谁都通不过信息.
+
+### 同时发起的议案不保序  
+一个议长Proposer同时发起多个不同的议案, 然后发起后他就去吃饭了. 接班的议长并不知道刚刚发起的多个议案相互之间的先后顺序, 就有可能导致这些议案的通过顺序不同. 如果这些议案恰好不是正交的, 那么最后会得出不同的结论.
+
+例如议长先后发起的两个语义正交的议案, 酒醉驾车违法, 家暴违法. 然后去吃饭了, 新来的哥们主持后边的会议是没有问题的.
+
+但如果前任议长发起的议案在语义上不正交, 必须保序. 比如 F91必须在WCS上穿女装, F91必须在WCS上换一次衣服. 根据继任者的理解不同, 可能F91会先女装,然后换装, 偏离了初衷.
 
 
+Atomic broadcast 原子广播
+系统里所有节点都以同样的顺序接受到消息，
+1. Validity: if a correct participant broadcasts a message, then all correct participants will eventually receive it.
+2. Uniform Agreement: if one correct participant receives a message, then all correct participants will eventually receive that message.
+3. Uniform Integrity: a message is received by each participant at most once, and only if it was previously broadcast.
+4. Uniform Total Order: the messages are totally ordered in the mathematical sense; that is, if any correct participant receives message 1 first and message 2 second, then every other correct participant must receive message 1 before message 2.
