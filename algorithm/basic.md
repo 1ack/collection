@@ -51,3 +51,5 @@ Link-cut Tree
 hashTree
 
 Skip list
+
+一致性hash
