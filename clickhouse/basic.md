@@ -38,6 +38,7 @@
       - [VersionedCollapsingMergeTree](#versionedcollapsingmergetree)
       - [SummingMergeTree](#summingmergetree)
   - [基本操作](#基本操作)
+  - [数据目录](#数据目录)
   - [实操 和postgresql性能对比](#实操-和postgresql性能对比)
     - [postgresql导出数据](#postgresql导出数据)
     - [数据修改](#数据修改)
@@ -687,6 +688,26 @@ clickhouse-client --query "CREATE DATABASE IF NOT EXISTS tutorial"
 clickhouse-client --query "SELECT COUNT(*) FROM tutorial.hits_v1"
 ```
 
+## 数据目录
+clickhouse表中的数据在磁盘上的存储目录如下图所示，data目录默认在 /var/lib/clickhouse
+
+![ch_file_dir](images/ch_file_dir.png)
+
+其中：
+* default：数据库名
+test_analysis：表名
+* 20180424_20180424_1_6_1：是一个part，每次插入数据就会生成一个part，part会不定时的merge成更大的一个part，每个part里的数据都是按照主键排序存储的
+* checksums.txt：校验值文件
+* columns.txt：列名文件，记录了表中的所有列名
+* column_name.mrk：每个列都有一个mrk文件
+* column_name.bin：每个列都有一个bin文件，里边存储了压缩后的真实数据
+* primary.idx：主键文件，存储了主键值
+
+
+* primary.idx存储的数据结构类似于一系列marks组成的数组，这里的marks就是每隔index_granularity行取的主键值，一般默认index_granularity=8192
+* column_name.mrk文件中也类似于primark.key，每隔 index_granularity行就会记录一次offset。
+* primark.idx和column_name.mrk文件做了逻辑行的映射关系
+* 当接收到查询操作时，首先在primary.idx中选出数据的大概范围，然后在column_name.mrk中得到对应数据的offset，根据offset将bin文件中的数据加载到内存，做真正的数据过滤得到查询结果
 
 ## 实操 和postgresql性能对比
 
