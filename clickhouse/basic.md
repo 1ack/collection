@@ -1,3 +1,51 @@
+- [ClickHouse介绍](#clickhouse介绍)
+  - [OLTP vs OLAP](#oltp-vs-olap)
+  - [列式存储](#列式存储)
+  - [应用场景](#应用场景)
+  - [限制](#限制)
+  - [编码压缩](#编码压缩)
+  - [向量化执行与SIMD](#向量化执行与simd)
+  - [多索引](#多索引)
+  - [数据Partitioning](#数据partitioning)
+  - [数据TTL](#数据ttl)
+  - [有限支持delete、update](#有限支持deleteupdate)
+  - [数据类型](#数据类型)
+    - [string](#string)
+    - [FixedString(N)](#fixedstringn)
+    - [Date](#date)
+    - [Datetime](#datetime)
+    - [Array(t)](#arrayt)
+    - [Nullable(typename)](#nullabletypename)
+  - [Table Functions](#table-functions)
+    - [file(path, format, structure)](#filepath-format-structure)
+    - [url(URL, format, structure)](#urlurl-format-structure)
+    - [mysql('host:port', 'database', 'table', 'user', 'password'[, replace_query, 'on_duplicate_clause'])](#mysqlhostport-database-table-user-password-replace_query-on_duplicate_clause)
+    - [jdbc(jdbc_connection_uri, schema, table)](#jdbcjdbc_connection_uri-schema-table)
+    - [input](#input)
+    - [generateRandom('name TypeName[, name TypeName]...', [, 'random_seed'[, 'max_string_length'[, 'max_array_length']]])](#generaterandomname-typename-name-typename--random_seed-max_string_length-max_array_length)
+    - [numbers](#numbers)
+  - [引擎](#引擎)
+    - [Log系列](#log系列)
+    - [Integration系列](#integration系列)
+    - [Special系列](#special系列)
+    - [MergeTree系列](#mergetree系列)
+      - [MergeTree](#mergetree)
+      - [ReplacingMergeTree](#replacingmergetree)
+      - [CollapsingMergeTree](#collapsingmergetree)
+      - [VersionedCollapsingMergeTree](#versionedcollapsingmergetree)
+      - [SummingMergeTree](#summingmergetree)
+  - [基本操作](#基本操作)
+  - [实操 和postgresql性能对比](#实操-和postgresql性能对比)
+    - [postgresql导出数据](#postgresql导出数据)
+    - [数据修改](#数据修改)
+    - [创建数据表](#创建数据表)
+    - [数据导入](#数据导入)
+    - [查询性能](#查询性能)
+      - [join查询](#join查询)
+      - [窗口函数查询](#窗口函数查询)
+
+
+
 # ClickHouse介绍
 ClickHouse是一个针对OLAP业务的列式数据库
 
@@ -84,7 +132,7 @@ ClickHouse实现了向量执行引擎（Vectorized execution engine），对内�
 
 ![ch_SIMD](images/ch_SIMD.png)
 
-# 多索引
+## 多索引
 列存用于裁剪不必要的字段读取，而索引则用于裁剪不必要的记录读取。
 
 ClickHouse 支持丰富的索引，从而在查询时尽可能的裁剪不必要的记录读取，提高查询性能。
@@ -182,30 +230,6 @@ alter table update col=val where filter_expr
 ```
 
 默认情况下删除、更新操作为异步操作，可以通过配置变为同步等待，
-
-
-
-## 基本操作
-
-启动服务
-```
-$ sudo service clickhouse-server start
-```
-
-
-启动客户端
-```
-$ clickhouse-client
-```
-
-命令行执行命令
-```
-clickhouse-client --query "CREATE DATABASE IF NOT EXISTS tutorial"
-clickhouse-client --query "SELECT COUNT(*) FROM tutorial.hits_v1"
-```
-
-
-
 
 ## 数据类型
 
@@ -604,6 +628,28 @@ SELECT key, sum(value) FROM summtt GROUP BY key
 ```
 
 使用场景:对某个字段长期的汇总查询场景
+
+
+
+## 基本操作
+
+启动服务
+```
+$ sudo service clickhouse-server start
+```
+
+
+启动客户端
+```
+$ clickhouse-client
+```
+
+命令行执行命令
+```
+clickhouse-client --query "CREATE DATABASE IF NOT EXISTS tutorial"
+clickhouse-client --query "SELECT COUNT(*) FROM tutorial.hits_v1"
+```
+
 
 ## 实操 和postgresql性能对比
 
