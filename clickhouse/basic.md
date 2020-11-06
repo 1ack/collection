@@ -24,6 +24,9 @@
     - [input](#input)
     - [generateRandom('name TypeName[, name TypeName]...', [, 'random_seed'[, 'max_string_length'[, 'max_array_length']]])](#generaterandomname-typename-name-typename--random_seed-max_string_length-max_array_length)
     - [numbers](#numbers)
+  - [sql语法](#sql语法)
+    - [create](#create)
+  - [system database](#system-database)
   - [引擎](#引擎)
     - [Log系列](#log系列)
     - [Integration系列](#integration系列)
@@ -361,6 +364,40 @@ numbers(N, M) ：生成N-（N+M-1）的整数
 -- Generate a sequence of dates from 2010-01-01 to 2010-12-31
 select toDate('2010-01-01') + number as d FROM numbers(365);
 ```
+
+## sql语法
+
+### create
+With Explicit Schema
+```
+CREATE TABLE [IF NOT EXISTS] [db.]table_name [ON CLUSTER cluster]
+(
+    name1 [type1] [DEFAULT|MATERIALIZED|ALIAS expr1] [compression_codec] [TTL expr1],
+    name2 [type2] [DEFAULT|MATERIALIZED|ALIAS expr2] [compression_codec] [TTL expr2],
+    ...
+) ENGINE = engine
+
+```
+
+Column Compression Codecs  每个字段可以单独指定压缩方式
+```
+CREATE TABLE codec_example
+(
+    dt Date CODEC(ZSTD),
+    ts DateTime CODEC(LZ4HC),
+    float_value Float32 CODEC(NONE),
+    double_value Float64 CODEC(LZ4HC(9))
+    value Float32 CODEC(Delta, ZSTD)
+)
+ENGINE = <Engine>
+
+```
+## system database
+* disks 查看磁盘空间
+* events 统计系统事件数据
+* columns 查看所有字段定义
+* processes 查看执行中的query，类似 SHOW PROCESSLIST ，查到query id，可通过KILL QUERY WHERE query_id='QUERY_ID' 杀掉query
+* query_log 查看执行过的query信息，包括启动时间，执行时长，错误信息等
 
 ## 引擎
 表引擎在ClickHouse中的作用十分关键，直接决定了数据如何存储和读取、是否支持并发读写、是否支持index、支持的query种类、是否支持主备复制等。
