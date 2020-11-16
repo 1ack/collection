@@ -168,18 +168,18 @@ eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhZG1pbiIsInN1YiI6ImFjY2VzcyIsIml
 
 4. 跨程序调用。
 
-5. token的承载的信息很丰富。
+5. token的承载的信息很丰富。比如可以加入授权信息。
 
 6. 客户端无需了解和实现加密逻辑，减少安全风险
 
 
 ### 缺点：
 
-1）如果JWT中的payload的信息过多，网络资源占用较多。
+1. 如果JWT中的payload的信息过多，网络资源占用较多。
 
-2）JWT 的过期和刷新处理起来较麻烦。
+2. JWT 的过期和刷新处理起来较麻烦。
 
-3）JWT本身不加密信息，需要依赖https或者SSL加密信息
+3. JWT本身不加密信息，需要依赖https或者SSL加密信息
 
 
 ## openapi JWT技术方案 1
