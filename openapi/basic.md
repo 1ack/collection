@@ -13,23 +13,55 @@ Resource + API Key + API Secret 匹配正确后，才可以访问Resource，通�
 
 ### 特点：
 
-1）API Key / API Secret这种模式本质不是RBAC（基于决算单的权限管理），而是做的ACL访问权限控制用的。
+1）服务器负责为每个客户端生成一对 key/secret （ key/secret 没有任何关系，不能相互推算），保存，并告知客户端。
 
-2）服务器负责为每个客户端生成一对 key/secret （ key/secret 没有任何关系，不能相互推算），保存，并告知客户端。
+2）一般是把所有的请求参数（API Key也放在请求参数内）排序后和API Secret做hash生成一个签名sign参数，服务器后台只需要按照规则做一次签名计算，然后和请求的签名做比较，如果相等验证通过，不相等就不通过。
 
-3）一般是把所有的请求参数（API Key也放在请求参数内）排序后和API Secret做hash生成一个签名sign参数，服务器后台只需要按照规则做一次签名计算，然后和请求的签名做比较，如果相等验证通过，不相等就不通过。
+3）为避免重放攻击，可加上 timestamp 参数，指明客户端调用的时间。服务端在验证请求时若 timestamp 超过允许误差则直接返回错误。
 
-4）为避免重放攻击，可加上 timestamp 参数，指明客户端调用的时间。服务端在验证请求时若 timestamp 超过允许误差则直接返回错误。
+4）一般来说每一个api用户都需要分配一对API Key / API Secret的，比如你有几百万的用户，那么需要几百万个密钥对的，数据量不大时一般存在xml中，数据量大时可以存在mysql表中。
 
-5）一般来说每一个api用户都需要分配一对API Key / API Secret的，比如你有几百万的用户，那么需要几百万个密钥对的，数据量不大时一般存在xml中，数据量大时可以存在mysql表中。
+### 请求规则
 
-### 签名规则
+![app_secret](images/app_secret.png)
+
 * 线下分配appid和appsecret，针对不同的调用方分配不同的appid和appsecret。
 * 加入timestamp（时间戳），10分钟内数据有效。
 * 加入流水号nonce（防止重复提交），至少为10位。针对查询接口，流水号只用于日志落地，便于后期日志核查。 针对办理类接口需校验流水号在有效期内的唯一性，以避免重复请求。
   *  （1）nonce为客户端随机生成的验证码，当服务器接收到请求后，会把nonce存储到数据库中，一般使用redis，并设置一个有效期，一般和时间戳timestamp的失效时间保持一致，设为10分钟有效期。
   * （2）当服务器接收到请求后，用请求中nonce（比如7878）和redis中的nonce集合做比较，如果已经存在，则拒绝访问接口，只有当10分钟之内第一次使用7878这个动态码，才判定访问有效。
-* 加入signature，所有数据的签名信息。 其中appid、timestamp、nonce、signature这四个字段放入请求头中。
+* 加入signature，所有数据的签名信息。 
+* appid、timestamp、nonce、signature这四个字段放入请求头中。
+
+### 签名生成
+1. 请求头部分
+   * X=”appid=xxxnonce=xxxtimestamp=xxx”
+
+2. 数据部分
+   * Path：按照path中的顺序将所有value进行拼接
+
+   * Query：按照key字典序排序，将所有key=value进行拼接
+
+   * Form：按照key字典序排序，将所有key=value进行拼接
+
+   * Body：
+
+     * Json: 按照key字典序排序，将所有key=value进行拼接（例如{“a”:”a”,”c”:”c”,”b”:{“e”:”e”}} => a=ab=e=ec=c）
+
+     * String: 整个字符串作为一个拼接  
+
+     * 如果存在多种数据形式，则按照path、query、form、body的顺序进行再拼接，得到所有数据的拼接值。
+
+     * 上述拼接的值记作 Y。
+
+3. 生成签名
+   * 最终拼接值=XY
+
+   * 最后将最终拼接值按照如下方法进行加密得到签名。
+
+```
+signature=hmacSha256Hex(appsecret, 拼接的值XY);
+```
 
 ### 优点：
 
@@ -37,6 +69,7 @@ Resource + API Key + API Secret 匹配正确后，才可以访问Resource，通�
 
 2）安全性较好。请求体内没有明文secret和其他敏感信息。
 
+3）客户端没有登录过程
  
 ### 缺点：
 
@@ -44,9 +77,9 @@ Resource + API Key + API Secret 匹配正确后，才可以访问Resource，通�
 
 2）鉴权本身不能承载其它的信息，服务端只能通过API Key来区别调用者。
 
-3）API Secret一旦泄密，将是致命的。
+3）API Secret一旦泄密，服务端接口将彻底暴露。
 
-4）客户端sdk逻辑较多
+4）客户端需要实现指定的加密逻辑
 
 
 ## Json Web Token（JWT）
@@ -123,26 +156,22 @@ eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhZG1pbiIsInN1YiI6ImFjY2VzcyIsIml
 ### JWT特点
 
 紧凑：意味着这个字符串很小，甚至可以放在URL参数，POST Parameter中以Http Header的方式传输。
-自包含：传输的字符串包含很多信息，别人拿到以后就不需要多次访问数据库获取信息，而且通过其中的信息就可以知道加密类型和方式（当然解密需要公钥和密钥）。
+自包含：传输的字符串包含很多信息，别人拿到以后就不需要多次访问数据库获取信息，而且通过其中的信息就可以知道加密类型和方式（解密需要公钥和密钥）。
 
 ### 优点：
 
-1）易于水平扩展（当访问量足够在时，相对于cookie-session方案而言的。如果把session中的认证信息都保存在JWT中，在服务端就没有session存在的必要了。当服务端水平扩展的时候，就不用处理session复制（session replication）/ session黏连（sticky session）或是引入外部session存储了）
+1. 易于水平扩展（当访问量足够在时，相对于cookie-session方案而言的。如果把session中的认证信息都保存在JWT中，在服务端就没有session存在的必要了。当服务端水平扩展的时候，就不用处理session复制或是引入外部session存储了）
 
-2）无状态。
+2. 无状态。
+   
+3. 支持移动设备。
 
-3）支持移动设备。
+4. 跨程序调用。
 
-4）跨程序调用。
+5. token的承载的信息很丰富。
 
-5）安全。
+6. 客户端无需了解和实现加密逻辑，减少安全风险
 
-6）token的承载的信息很丰富。
-
-7）客户端逻辑简单
-
-
-事实上，所有使用token的模式，都是无状态、跨程序调用的。
 
 ### 缺点：
 
@@ -173,7 +202,7 @@ eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhZG1pbiIsInN1YiI6ImFjY2VzcyIsIml
 
 注：为使服务重启后原token继续保持有效，需要将token持久化，一般用redis+TTL
 
-缺点：客户端逻辑更复杂一些
+缺点：客户端交互逻辑更复杂一些
 
 ## JWT token失效方案
 1. 数据库里存有效的refresh_token,设置字段：过期时间，是否失效
